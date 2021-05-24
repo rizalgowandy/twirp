@@ -5,13 +5,13 @@
     "previous": "Previous",
     "tagline": "Simple RPC framework powered by protobuf",
     "docs": {
-      "best_practices": {
-        "title": "Best Practices",
-        "sidebar_label": "Best Practices"
+      "'best_practices'": {
+        "title": "'Best Practices'",
+        "sidebar_label": "'Best Practices'"
       },
       "command_line": {
-        "title": "Command line parameters",
-        "sidebar_label": "Command line parameters"
+        "title": "Generator Flags for the Protoc Compiler",
+        "sidebar_label": "Generator Flags"
       },
       "curl": {
         "title": "cURL",
@@ -30,24 +30,20 @@
         "sidebar_label": "Custom HTTP Headers"
       },
       "hooks": {
-        "title": "Server Hooks",
-        "sidebar_label": "Server Hooks"
+        "title": "Hooks and Interceptors",
+        "sidebar_label": "Hooks and Interceptors"
       },
       "install": {
         "title": "Installing Twirp",
         "sidebar_label": "Installation"
-      },
-      "interceptors": {
-        "title": "Interceptors",
-        "sidebar_label": "Interceptors"
       },
       "intro": {
         "title": "Meet Twirp!",
         "sidebar_label": "Overview"
       },
       "mux": {
-        "title": "Muxing Twirp services",
-        "sidebar_label": "Muxing Twirp with other HTTP services"
+        "title": "Muxing Twirp with other HTTP services",
+        "sidebar_label": "Muxing Twirp services"
       },
       "proto_and_json": {
         "title": "Twirp's Serialization Schemes",
@@ -68,6 +64,10 @@
       "spec_v7": {
         "title": "Twirp Wire Protocol (v7)",
         "sidebar_label": "Version 7 (Current)"
+      },
+      "version_matrix": {
+        "title": "Version Compatibility",
+        "sidebar_label": "Version Compatibility"
       }
     },
     "links": {

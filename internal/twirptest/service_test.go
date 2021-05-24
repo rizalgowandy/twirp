@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -30,8 +31,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/golang/protobuf/jsonpb"
 	pkgerrors "github.com/pkg/errors"
+	"google.golang.org/protobuf/encoding/protojson"
 
 	"github.com/twitchtv/twirp"
 	"github.com/twitchtv/twirp/internal/descriptors"
@@ -118,7 +119,7 @@ func TestServerJSONWithUnknownFields(t *testing.T) {
 		t.Fatalf("Could not even read bytes from response: %q", err.Error())
 	}
 	hat := new(Hat)
-	if err = jsonpb.Unmarshal(bytes.NewReader(respBytes), hat); err != nil {
+	if err = protojson.Unmarshal(respBytes, hat); err != nil {
 		t.Fatalf("Could not unmarshall response as Hat: %s", respBytes)
 	}
 	if hat.Size != 0 {
@@ -1525,5 +1526,146 @@ func TestPanicFlushing(t *testing.T) {
 	}
 	if twerr.Msg() != "Internal service panic" {
 		t.Errorf("twirp client err has unexpected message %q, want %q", twerr.Msg(), "Internal service panic")
+	}
+}
+
+// testLogger creates a *log.Logger that writes log messages to the test's
+// output. This makes log messages appear only if the test fails, and makes them
+// align correctly for nested subtests.
+func testLogger(t *testing.T) *log.Logger {
+	return log.New(testWriter{t}, "", log.LstdFlags)
+}
+
+type testWriter struct{ t *testing.T }
+
+func (w testWriter) Write(p []byte) (int, error) {
+	w.t.Log(string(p))
+	return len(p), nil
+}
+
+type errReader struct{}
+
+func (errReader) Read(p []byte) (n int, err error) {
+	return 0, fmt.Errorf("test error")
+}
+
+// Test failures when reading the request.
+// The request could be incomplete because the client timed out, which in most cases is signaled by
+// a context cancelation or timeout. In those cases, the twirp handled would properly identify and return those errors.
+func TestRequestBodyError(t *testing.T) {
+	type contextUpdate func(ctx context.Context) (context.Context, context.CancelFunc)
+	testCases := []struct {
+		testname          string
+		expectedError     twirp.ErrorCode
+		errorString       string
+		requestType       string
+		contextFunc       contextUpdate
+		isContextCanceled bool
+	}{
+		{
+			testname:          "ProtobufFailedToReadRequestBodyError",
+			expectedError:     twirp.Malformed,
+			errorString:       "failed to read request body",
+			requestType:       "application/protobuf",
+			contextFunc:       func(ctx context.Context) (context.Context, context.CancelFunc) { return ctx, func() {} },
+			isContextCanceled: false,
+		},
+		{
+			testname:      "ProtobufDeadlineExceededError",
+			expectedError: twirp.DeadlineExceeded,
+			errorString:   "failed to read request: deadline exceeded",
+			requestType:   "application/protobuf",
+			contextFunc: func(ctx context.Context) (context.Context, context.CancelFunc) {
+				return context.WithTimeout(ctx, 0*time.Millisecond)
+			},
+			isContextCanceled: false,
+		},
+		{
+			testname:      "ProtobufFailedToReadRequestBodyError",
+			expectedError: twirp.Canceled,
+			errorString:   "failed to read request: context canceled",
+			requestType:   "application/protobuf",
+			contextFunc: func(ctx context.Context) (context.Context, context.CancelFunc) {
+				return context.WithCancel(ctx)
+			},
+			isContextCanceled: true,
+		},
+		{
+			testname:          "JSONFailedToReadRequestBodyError",
+			expectedError:     twirp.Malformed,
+			errorString:       "the json request could not be decoded",
+			requestType:       "application/json",
+			contextFunc:       func(ctx context.Context) (context.Context, context.CancelFunc) { return ctx, func() {} },
+			isContextCanceled: false,
+		},
+		{
+			testname:      "JSONDeadlineExceededError",
+			expectedError: twirp.DeadlineExceeded,
+			errorString:   "failed to read request: deadline exceeded",
+			requestType:   "application/json",
+			contextFunc: func(ctx context.Context) (context.Context, context.CancelFunc) {
+				return context.WithTimeout(ctx, 0*time.Millisecond)
+			},
+			isContextCanceled: false,
+		},
+		{
+			testname:      "JSONFailedToReadRequestBodyError",
+			expectedError: twirp.Canceled,
+			errorString:   "failed to read request: context canceled",
+			requestType:   "application/json",
+			contextFunc: func(ctx context.Context) (context.Context, context.CancelFunc) {
+				return context.WithCancel(ctx)
+			},
+			isContextCanceled: true,
+		},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.testname, func(t *testing.T) {
+			// test case validate reqest body read error handling
+			var s Haberdasher
+			hooks := &twirp.ServerHooks{Error: func(ctx context.Context, err twirp.Error) context.Context {
+				if ctxErr := tc.expectedError; err.Code() != ctxErr {
+					t.Errorf("twirp ErrorCode expected to be %q, but found %q", ctxErr, err.Code())
+				}
+				if ctxErr := tc.errorString; err.Msg() != ctxErr {
+					t.Errorf("twirp client err has unexpected message %q, want %q", err.Msg(), ctxErr)
+				}
+				return ctx
+			}}
+			server := NewHaberdasherServer(s, hooks)
+			ctx := context.Background()
+			ctx, cancel := tc.contextFunc(ctx)
+
+			// Make a request, that will call endpoint method
+			req, _ := http.NewRequest(http.MethodPost, "http://testing:8080/twirp/twirp.internal.twirptest.Haberdasher/MakeHat", errReader{})
+			req.Header.Set("Accept", tc.requestType)
+			req.Header.Set("Content-Type", tc.requestType)
+			// Associate the cancellable context we just created to the request
+			req = req.WithContext(ctx)
+			if tc.isContextCanceled {
+				cancel()
+			} else {
+				defer cancel()
+			}
+			w := httptest.NewRecorder()
+			server.ServeHTTP(w, req)
+
+			// validate error code
+			expectedErrCode := twirp.ServerHTTPStatusFromErrorCode(tc.expectedError)
+			if w.Code != expectedErrCode {
+				t.Errorf("HTTP ErrorCode expected to be %q, but found %q", expectedErrCode, w.Code)
+			}
+
+			// validate error message
+			respBytes, err := ioutil.ReadAll(w.Body)
+			if err != nil {
+				t.Fatalf("Could not even read bytes from response: %q", err.Error())
+			}
+
+			expectedErrMessage := tc.errorString
+			if !strings.Contains(string(respBytes), expectedErrMessage) {
+				t.Errorf("HTTP client err has unexpected message %q, want %q", string(respBytes), expectedErrMessage)
+			}
+		})
 	}
 }
